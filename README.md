@@ -5,7 +5,7 @@ This project shows how to build a news aggregator app and then make it faster. I
 The project has two versions
 
 - Slow version with performance problems (on slow-version branch)
-- Fast version with optimizations (on main branch)
+- Fast version with optimizations (on main branch) 
 
 ## What It Does
 

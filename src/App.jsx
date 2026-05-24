@@ -1,19 +1,17 @@
-import React, { useState, useEffect } from "react";
-import _ from "lodash"; // Anti-pattern: importing entire lodash library
+import React, { useState, useEffect, useMemo } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import sortBy from "lodash/sortBy";
 import "./App.css";
 
 const HackerNewsAPI = "https://hacker-news.firebaseio.com/v0";
 
-/**
- * SLOW VERSION - Phase 1
- * This version contains intentional anti-patterns:
- * 1. Sequential (N+1) fetching of stories
- * 2. No list virtualization - renders all 500+ items
- * 3. Full lodash import
- * 4. Expensive computations in render (date formatting)
- * 5. Unoptimized hero image
- * 6. No code splitting
- */
+const dateFormatter = new Intl.DateTimeFormat("en-US", {
+  year: "numeric",
+  month: "short",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+});
 
 function App() {
   const [articles, setArticles] = useState([]);
@@ -23,24 +21,20 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
-  // Anti-pattern: N+1 sequential fetching
   useEffect(() => {
     const fetchAllStories = async () => {
       try {
         setLoading(true);
-        // Fetch top story IDs
         const response = await fetch(`${HackerNewsAPI}/topstories.json`);
         const storyIds = await response.json();
 
-        const stories = [];
+        const storyPromises = storyIds
+          .slice(0, 500)
+          .map((id) =>
+            fetch(`${HackerNewsAPI}/item/${id}.json`).then((r) => r.json()),
+          );
 
-        // Anti-pattern: Sequential loop - fetch one by one
-        for (const id of storyIds.slice(0, 500)) {
-          const storyResp = await fetch(`${HackerNewsAPI}/item/${id}.json`);
-          const storyData = await storyResp.json();
-          stories.push(storyData);
-        }
-
+        const stories = await Promise.all(storyPromises);
         setArticles(stories);
         setFilteredArticles(stories);
         setLoading(false);
@@ -53,28 +47,23 @@ function App() {
     fetchAllStories();
   }, []);
 
-  // Handle search input
   const handleSearch = (e) => {
     const term = e.target.value.toLowerCase();
     setSearchTerm(term);
 
-    // Anti-pattern: Filter entire list on every keystroke
     const filtered = articles.filter(
       (article) => article.title && article.title.toLowerCase().includes(term),
     );
     setFilteredArticles(filtered);
   };
 
-  // Handle sort
   const handleSort = () => {
     setSortByScore(!sortByScore);
 
-    // Anti-pattern: Using _.sortBy on entire list
     if (!sortByScore) {
-      const sorted = _.sortBy(filteredArticles, "score").reverse();
+      const sorted = sortBy(filteredArticles, "score").reverse();
       setFilteredArticles(sorted);
     } else {
-      // Reset to search filtered
       const term = searchTerm.toLowerCase();
       const filtered = articles.filter(
         (article) =>
@@ -86,12 +75,20 @@ function App() {
 
   return (
     <div className="app">
-      {/* Large unoptimized hero image - Anti-pattern */}
       <div className="hero-section">
         <img
-          src="https://images.unsplash.com/photo-1557821552-17105176677c?w=1200&h=400&fit=crop"
+          data-testid="hero-image"
+          src="https://images.unsplash.com/photo-1557821552-17105176677c?w=1200&h=400&fit=crop&q=80"
           alt="News Hero"
           className="hero-image"
+          width="1200"
+          height="400"
+          srcSet="
+            https://images.unsplash.com/photo-1557821552-17105176677c?w=400&h=300&fit=crop&q=80 400w,
+            https://images.unsplash.com/photo-1557821552-17105176677c?w=800&h=300&fit=crop&q=80 800w,
+            https://images.unsplash.com/photo-1557821552-17105176677c?w=1200&h=400&fit=crop&q=80 1200w
+          "
+          loading="lazy"
         />
       </div>
 
@@ -115,28 +112,72 @@ function App() {
         {loading && <div className="loading">Loading articles...</div>}
         {error && <div className="error">Error: {error}</div>}
 
-        {/* Anti-pattern: Render all 500+ items directly into DOM */}
-        <div className="article-list" data-testid="article-list">
-          {filteredArticles.map((article) => (
-            <ArticleItem key={article.id} article={article} />
-          ))}
-        </div>
+        <VirtualizedArticleList articles={filteredArticles} />
       </div>
     </div>
   );
 }
 
-// Anti-pattern: Component without React.memo, expensive date formatting in every render
-function ArticleItem({ article }) {
-  // Anti-pattern: Expensive date formatting on every single render
-  const formattedDate = new Date(article.time * 1000).toLocaleString();
+function VirtualizedArticleList({ articles }) {
+  const parentRef = React.useRef(null);
+
+  const virtualizer = useVirtualizer({
+    count: articles.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 200,
+    overscan: 10,
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+
+  return (
+    <div
+      ref={parentRef}
+      className="article-list"
+      data-testid="article-list"
+      style={{
+        height: "calc(100vh - 400px)",
+        overflow: "auto",
+      }}
+    >
+      <div
+        style={{
+          height: `${virtualizer.getTotalSize()}px`,
+          width: "100%",
+          position: "relative",
+        }}
+      >
+        {virtualItems.map((virtualItem) => (
+          <div
+            key={virtualItem.key}
+            style={{
+              position: "absolute",
+              top: 0,
+              left: 0,
+              width: "100%",
+              transform: `translateY(${virtualItem.start}px)`,
+            }}
+          >
+            <ArticleItem article={articles[virtualItem.index]} />
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const ArticleItem = React.memo(({ article }) => {
+  const formattedDate = useMemo(
+    () => dateFormatter.format(new Date(article.time * 1000)),
+    [article.time],
+  );
 
   return (
     <div className="article-item" data-testid="article-item">
       <div className="article-header">
         <h3 className="article-title">{article.title}</h3>
         <div className="article-meta">
-          <span className="score">Score: {article.score}</span>
+          <span className="score">Score {article.score}</span>
           <span className="author">by {article.by}</span>
           <span className="date">{formattedDate}</span>
         </div>
@@ -148,11 +189,13 @@ function ArticleItem({ article }) {
           rel="noopener noreferrer"
           className="article-link"
         >
-          Read more →
+          Read more
         </a>
       )}
     </div>
   );
-}
+});
+
+ArticleItem.displayName = "ArticleItem";
 
 export default App;
